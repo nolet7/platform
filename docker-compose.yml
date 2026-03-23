@@ -54,8 +54,6 @@ services:
     build: ./services/ml-adapter
     ports:
       - "8081:8081"
-    environment:
-      MLFLOW_TRACKING_URI: http://mlflow:5000
     depends_on:
       - mlflow
 

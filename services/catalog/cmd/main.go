@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -130,7 +131,9 @@ func (s *CatalogService) RegisterEntity(c *gin.Context) {
 			"entity_id":  entity.ID,
 			"timestamp":  time.Now(),
 		})
-		s.nats.Publish("platform.events", eventData)
+		if err := s.nats.Publish("platform.events", eventData); err != nil {
+			log.Printf("Warning: failed to publish NATS event for entity %s: %v", entity.ID, err)
+		}
 	}
 
 	c.JSON(http.StatusCreated, entity)
@@ -169,18 +172,15 @@ func (s *CatalogService) SearchEntities(c *gin.Context) {
 	argPos := 1
 
 	if entityType != "" {
-		query += " AND type = $1"
+		query += fmt.Sprintf(" AND type = $%d", argPos)
 		args = append(args, entityType)
 		argPos++
 	}
 
 	if owner != "" {
-		if argPos == 1 {
-			query += " AND owner_team = $1"
-		} else {
-			query += " AND owner_team = $2"
-		}
+		query += fmt.Sprintf(" AND owner_team = $%d", argPos)
 		args = append(args, owner)
+		argPos++
 	}
 
 	query += " ORDER BY created_at DESC LIMIT 100"
@@ -223,16 +223,17 @@ func (s *CatalogService) UpdateEntity(c *gin.Context) {
 	argPos := 1
 
 	if name, ok := updates["name"]; ok {
-		query += ", name = $1"
+		query += fmt.Sprintf(", name = $%d", argPos)
 		args = append(args, name)
 		argPos++
 	}
 
 	if argPos == 1 {
-		query += " WHERE id = $1"
-	} else {
-		query += " WHERE id = $2"
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No valid fields to update"})
+		return
 	}
+
+	query += fmt.Sprintf(" WHERE id = $%d", argPos)
 	args = append(args, id)
 
 	_, err := s.db.Exec(query, args...)
