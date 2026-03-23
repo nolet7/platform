@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  postgresql:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: platformpass
+      POSTGRES_DB: platform_catalog
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./services/catalog/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  nats:
+    image: nats:2.10-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: "-js -m 8222"
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.9.1
+    ports:
+      - "5000:5000"
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://platform:platformpass@postgresql:5432/mlflow
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow/artifacts
+    volumes:
+      - mlflow_data:/mlflow
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    command: mlflow server --host 0.0.0.0 --port 5000
+
+  catalog:
+    build: ./services/catalog
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://platform:platformpass@postgresql:5432/platform_catalog?sslmode=disable
+      NATS_URL: nats://nats:4222
+      PORT: 8080
+    depends_on:
+      postgresql:
+        condition: service_healthy
+      nats:
+        condition: service_started
+
+  ml-adapter:
+    build: ./services/ml-adapter
+    ports:
+      - "8081:8081"
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    depends_on:
+      - mlflow
+
+  portal:
+    build: ./portal
+    ports:
+      - "3000:80"
+    depends_on:
+      - catalog
+      - ml-adapter
+
+volumes:
+  postgres_data:
+  mlflow_data:

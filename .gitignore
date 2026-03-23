@@ -1,0 +1,62 @@
+# Platform specific
+*.tfstate
+*.tfstate.*
+.terraform/
+*.env
+.env.local
+secrets/
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+vendor/
+go.work
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dist/
+build/
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Kubernetes
+kubeconfig
+
+# Helm
+charts/*/charts/
+charts/*/*.tgz
+
+# Temporal
+temporal-data/
+
+# Logs
+*.log
+logs/

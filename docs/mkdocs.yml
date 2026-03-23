@@ -1,0 +1,38 @@
+site_name: Platform Documentation
+site_description: Internal Developer Platform Documentation
+site_author: Platform Team
+
+theme:
+  name: material
+  palette:
+    primary: indigo
+    accent: indigo
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - toc.integrate
+    - search.suggest
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Quick Start: getting-started/quickstart.md
+    - Installation: getting-started/installation.md
+  - Architecture:
+    - Overview: architecture/overview.md
+    - Services: architecture/services.md
+  - Golden Paths:
+    - Microservices: golden-paths/microservices.md
+    - ML Models: golden-paths/ml-models.md
+  - API Reference:
+    - Catalog API: api/catalog.md
+    - ML Registry API: api/ml-registry.md
+  - Runbooks:
+    - Troubleshooting: runbooks/troubleshooting.md
+
+markdown_extensions:
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - admonition
+  - toc:
+      permalink: true
