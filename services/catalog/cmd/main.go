@@ -2,10 +2,14 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
 	"log"
+	"net/http"
 	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	"github.com/nats-io/nats.go"
 )
@@ -15,31 +19,42 @@ type CatalogService struct {
 	nats *nats.Conn
 }
 
+type Entity struct {
+	ID                 string                 `json:"id"`
+	Type               string                 `json:"type" binding:"required"`
+	Name               string                 `json:"name" binding:"required"`
+	OwnerTeam          string                 `json:"owner_team" binding:"required"`
+	OwnerEmail         string                 `json:"owner_email" binding:"required"`
+	Tier               string                 `json:"tier"`
+	DataClassification string                 `json:"data_classification"`
+	Metadata           map[string]interface{} `json:"metadata"`
+	CreatedAt          time.Time              `json:"created_at"`
+	UpdatedAt          time.Time              `json:"updated_at"`
+	CreatedBy          string                 `json:"created_by"`
+	UpdatedBy          string                 `json:"updated_by"`
+}
+
 func main() {
-	// Connect to PostgreSQL
 	db, err := sql.Open("postgres", os.Getenv("DATABASE_URL"))
 	if err != nil {
 		log.Fatal("Failed to connect to database:", err)
 	}
 	defer db.Close()
 
-	// Connect to NATS
 	nc, err := nats.Connect(os.Getenv("NATS_URL"))
 	if err != nil {
-		log.Fatal("Failed to connect to NATS:", err)
+		log.Println("Warning: Failed to connect to NATS:", err)
+		nc = nil
 	}
-	defer nc.Close()
+	if nc != nil {
+		defer nc.Close()
+	}
 
 	svc := &CatalogService{db: db, nats: nc}
 
-	// Initialize Gin router
 	r := gin.Default()
-
-	// Middleware
 	r.Use(CORSMiddleware())
-	r.Use(RequestIDMiddleware())
 
-	// Health checks
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "healthy"})
 	})
@@ -51,7 +66,6 @@ func main() {
 		c.JSON(200, gin.H{"status": "ready"})
 	})
 
-	// API routes
 	v1 := r.Group("/api/v1")
 	{
 		v1.POST("/entities", svc.RegisterEntity)
@@ -61,7 +75,6 @@ func main() {
 		v1.DELETE("/entities/:id", svc.DeleteEntity)
 	}
 
-	// Start server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -75,38 +88,168 @@ func CORSMiddleware() gin.HandlerFunc {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-		
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
 		}
-		
 		c.Next()
 	}
 }
 
-func RequestIDMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		requestID := c.GetHeader("X-Request-ID")
-		if requestID == "" {
-			requestID = generateRequestID()
+func (s *CatalogService) RegisterEntity(c *gin.Context) {
+	var entity Entity
+	if err := c.ShouldBindJSON(&entity); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if entity.ID == "" {
+		entity.ID = uuid.New().String()
+	}
+
+	metadataJSON, err := json.Marshal(entity.Metadata)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid metadata format"})
+		return
+	}
+
+	query := `INSERT INTO entities (id, type, name, owner_team, owner_email, tier, data_classification, metadata, created_by, updated_by)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING created_at, updated_at`
+
+	err = s.db.QueryRow(query, entity.ID, entity.Type, entity.Name, entity.OwnerTeam, entity.OwnerEmail,
+		entity.Tier, entity.DataClassification, metadataJSON, "system", "system").Scan(&entity.CreatedAt, &entity.UpdatedAt)
+
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error: " + err.Error()})
+		return
+	}
+
+	if s.nats != nil {
+		eventData, _ := json.Marshal(map[string]interface{}{
+			"event_type": "entity.registered",
+			"entity_id":  entity.ID,
+			"timestamp":  time.Now(),
+		})
+		s.nats.Publish("platform.events", eventData)
+	}
+
+	c.JSON(http.StatusCreated, entity)
+}
+
+func (s *CatalogService) GetEntity(c *gin.Context) {
+	id := c.Param("id")
+	var entity Entity
+	var metadataJSON []byte
+
+	query := `SELECT id, type, name, owner_team, owner_email, tier, data_classification, 
+		metadata, created_at, updated_at, created_by, updated_by FROM entities WHERE id = $1`
+
+	err := s.db.QueryRow(query, id).Scan(&entity.ID, &entity.Type, &entity.Name, &entity.OwnerTeam, &entity.OwnerEmail,
+		&entity.Tier, &entity.DataClassification, &metadataJSON, &entity.CreatedAt, &entity.UpdatedAt, &entity.CreatedBy, &entity.UpdatedBy)
+
+	if err == sql.ErrNoRows {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Entity not found"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+
+	json.Unmarshal(metadataJSON, &entity.Metadata)
+	c.JSON(http.StatusOK, entity)
+}
+
+func (s *CatalogService) SearchEntities(c *gin.Context) {
+	entityType := c.Query("type")
+	owner := c.Query("owner")
+
+	query := "SELECT id, type, name, owner_team, owner_email, tier, data_classification, metadata, created_at, updated_at FROM entities WHERE 1=1"
+	args := []interface{}{}
+	argPos := 1
+
+	if entityType != "" {
+		query += " AND type = $1"
+		args = append(args, entityType)
+		argPos++
+	}
+
+	if owner != "" {
+		if argPos == 1 {
+			query += " AND owner_team = $1"
+		} else {
+			query += " AND owner_team = $2"
 		}
-		c.Set("requestID", requestID)
-		c.Writer.Header().Set("X-Request-ID", requestID)
-		c.Next()
+		args = append(args, owner)
 	}
+
+	query += " ORDER BY created_at DESC LIMIT 100"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	defer rows.Close()
+
+	entities := []Entity{}
+	for rows.Next() {
+		var entity Entity
+		var metadataJSON []byte
+
+		err := rows.Scan(&entity.ID, &entity.Type, &entity.Name, &entity.OwnerTeam, &entity.OwnerEmail,
+			&entity.Tier, &entity.DataClassification, &metadataJSON, &entity.CreatedAt, &entity.UpdatedAt)
+		if err != nil {
+			continue
+		}
+
+		json.Unmarshal(metadataJSON, &entity.Metadata)
+		entities = append(entities, entity)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"entities": entities, "count": len(entities)})
 }
 
-func generateRequestID() string {
-	// Simple implementation - replace with UUID in production
-	return "req-" + randomString(16)
+func (s *CatalogService) UpdateEntity(c *gin.Context) {
+	id := c.Param("id")
+	var updates map[string]interface{}
+	if err := c.ShouldBindJSON(&updates); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	query := "UPDATE entities SET updated_at = NOW(), updated_by = 'system'"
+	args := []interface{}{}
+	argPos := 1
+
+	if name, ok := updates["name"]; ok {
+		query += ", name = $1"
+		args = append(args, name)
+		argPos++
+	}
+
+	if argPos == 1 {
+		query += " WHERE id = $1"
+	} else {
+		query += " WHERE id = $2"
+	}
+	args = append(args, id)
+
+	_, err := s.db.Exec(query, args...)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "updated"})
 }
 
-func randomString(n int) string {
-	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = letters[i%len(letters)]
+func (s *CatalogService) DeleteEntity(c *gin.Context) {
+	id := c.Param("id")
+	_, err := s.db.Exec("DELETE FROM entities WHERE id = $1", id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
 	}
-	return string(b)
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
 }

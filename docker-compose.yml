@@ -11,7 +11,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./services/catalog/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - ./services/catalog/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U platform"]
       interval: 5s
@@ -30,14 +30,11 @@ services:
     ports:
       - "5000:5000"
     environment:
-      MLFLOW_BACKEND_STORE_URI: postgresql://platform:platformpass@postgresql:5432/mlflow
-      MLFLOW_DEFAULT_ARTIFACT_ROOT: /mlflow/artifacts
+      MLFLOW_BACKEND_STORE_URI: sqlite:///mlflow/mlflow.db
+      MLFLOW_DEFAULT_ARTIFACT_ROOT: file:///mlflow/artifacts
     volumes:
       - mlflow_data:/mlflow
-    depends_on:
-      postgresql:
-        condition: service_healthy
-    command: mlflow server --host 0.0.0.0 --port 5000
+    command: mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root file:///mlflow/artifacts
 
   catalog:
     build: ./services/catalog
